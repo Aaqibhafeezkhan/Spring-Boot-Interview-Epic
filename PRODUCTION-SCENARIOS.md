@@ -72,3 +72,59 @@ Compare configuration, environment variables, profiles, dependency versions, dat
 Start with the problem and evidence. Establish the business impact, measure the system, identify the dominant constraint, make the smallest safe change, add observability around the failure mode, and verify the result under realistic load.
 
 A strong Spring Boot answer connects framework features to distributed-system behavior rather than simply naming annotations.
+
+## 11. A transaction succeeds but the response is unexpectedly slow
+
+Separate database work from everything else inside the transaction. Check whether the transaction is holding a connection while waiting on HTTP calls, messaging, file I/O or other slow operations.
+
+### Strong answer
+
+Keep transaction boundaries as narrow as the consistency requirement allows. Move non-transactional work outside the transaction when safe, and verify that the resulting ordering still satisfies the business invariant.
+
+### Follow-up
+
+Why can this become a connection-pool incident?
+
+Because each request can hold a database connection while doing unrelated slow work, reducing the number of connections available to other requests.
+
+## 12. A retry suddenly multiplies database load
+
+Look for retries at multiple layers, missing backoff, synchronized retry timing and retries around operations that are not safe to repeat.
+
+### Senior-level point
+
+Retries are a load multiplier. Define ownership of retries, use bounded exponential backoff with jitter where appropriate, enforce timeouts, and make operations idempotent when possible.
+
+## 13. An N+1 regression appears after a harmless-looking feature change
+
+Compare query counts before and after the change. Inspect ORM-generated SQL and the access pattern that triggered lazy relationships.
+
+### Strong answer
+
+Choose the fix based on the use case: fetch joins, entity graphs, projections or an explicit query can all be appropriate. Avoid making every relationship eager just to hide one query problem.
+
+### Follow-up
+
+What would you monitor in production?
+
+Database query latency, query counts where measurable, connection-pool utilization and endpoint-level latency, correlated with the affected release.
+
+## 14. Async work overwhelms the application
+
+Check executor queue depth, active threads, task rejection, task duration and downstream capacity. Confirm whether asynchronous execution is actually increasing useful throughput or merely moving the bottleneck.
+
+### Strong answer
+
+Bound the executor, choose a queue policy deliberately, propagate required context safely, and apply backpressure or admission control where the workload requires it.
+
+## 15. Production debugging starts with incomplete evidence
+
+Do not guess the root cause from a single stack trace. Establish a timeline using logs, metrics, traces, deployment history and dependency health.
+
+### Interview pattern
+
+State the hypothesis, identify the evidence that would confirm or reject it, make the lowest-risk diagnostic change, then narrow the scope iteratively.
+
+### Senior-level point
+
+The quality of the debugging process matters as much as knowing individual Spring annotations.
