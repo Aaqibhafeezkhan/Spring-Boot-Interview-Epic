@@ -415,6 +415,133 @@ If I am preparing for a Spring Boot interview, these are the areas I want to be 
 337. How would you handle schema evolution for events?
 338. How would you debug a message that appears to have disappeared?
 
+# Phase 5 — Resilience and Distributed Systems Deep Dive
+
+This phase goes beyond individual framework features and focuses on how a Spring Boot service behaves when dependencies are slow, unavailable, duplicated, overloaded, or only partially successful.
+
+### Resilience fundamentals
+
+**What is the difference between a timeout, retry, circuit breaker, bulkhead, and fallback?**
+
+A **timeout** bounds how long we wait. A **retry** gives a transient failure another chance. A **circuit breaker** stops repeatedly calling an unhealthy dependency. A **bulkhead** limits how much capacity one dependency can consume. A **fallback** provides an alternate result or degraded behavior. They solve different failure modes and should not be added mechanically.
+
+**Why should every outbound call have a timeout?**
+
+Without a timeout, blocked calls can consume request threads, connection-pool slots, memory, and downstream capacity until the service itself becomes unhealthy. Timeouts should reflect the end-to-end latency budget rather than being copied blindly across services.
+
+**When should you retry?**
+
+Retry only failures that are plausibly transient and safe to retry. Use bounded attempts, exponential backoff, and jitter. Do not retry validation errors, authorization failures, or non-idempotent operations unless the API explicitly provides an idempotency mechanism.
+
+**Why is jitter important?**
+
+Without jitter, many clients that fail together can retry together, creating a synchronized load spike. Randomized backoff spreads retries over time and reduces retry storms.
+
+**What is a retry storm?**
+
+A dependency becomes slow or unavailable, callers retry aggressively, the extra traffic increases load, and the dependency becomes even less healthy. The protection is bounded retries, backoff, jitter, timeouts, circuit breaking, and sometimes load shedding.
+
+### Circuit breakers and bulkheads
+
+**What should a circuit breaker actually protect?**
+
+It should protect the caller and the dependency from repeated failing calls. A useful policy distinguishes failures from expected business responses and uses measured failure/slow-call thresholds rather than treating every non-200 response identically.
+
+**What are closed, open, and half-open states?**
+
+Closed permits normal traffic while measuring failures. Open rejects or fails fast for a period. Half-open permits a limited number of probe calls to determine whether the dependency has recovered.
+
+**What is a bulkhead in a Spring service?**
+
+Separate concurrency or resource capacity by dependency or workload so one slow integration cannot consume the entire executor, connection pool, or request capacity. This is especially useful when a service calls several independent downstream systems.
+
+### Caching under failure
+
+**Local cache vs distributed cache — how do you choose?**
+
+A local cache has very low latency and avoids a network hop but is per-instance and can become stale independently. A distributed cache gives shared state and more consistent behavior across instances but adds network latency, operational dependency, and its own failure mode.
+
+**What is cache stampede?**
+
+Many requests miss the same expired key and all regenerate the value simultaneously. Mitigations include request coalescing, locking, early refresh, randomized TTLs, and stale-while-revalidate behavior where appropriate.
+
+**What should happen if Redis is unavailable?**
+
+The answer depends on whether the cache is an optimization or a required coordination primitive. For an ordinary read cache, the application may bypass it and use the source of truth with protection against a thundering herd. If Redis is used for correctness-critical coordination, failing open may be unsafe and the operation may need to fail closed.
+
+### Messaging and asynchronous processing
+
+**At-least-once delivery means what for the consumer?**
+
+The consumer must assume a message can be delivered more than once. Processing therefore needs an idempotency strategy, such as a durable event ID, unique constraint, inbox table, or another deduplication mechanism.
+
+**How do you design an idempotent consumer?**
+
+Identify a stable message or business-operation ID, persist the processing decision durably, and make the side effect conditional on that record. The deduplication state must survive restarts and be scoped to the business semantics.
+
+**What is a dead-letter queue/topic?**
+
+A destination for messages that cannot be processed after the configured failure policy. It prevents permanently bad messages from blocking normal consumption while preserving them for inspection and controlled replay.
+
+**What is consumer lag and how would you investigate it?**
+
+Lag means consumers are falling behind producers. Check consumer throughput, partition distribution, downstream latency, rebalances, executor saturation, database contention, message size, and poison messages before simply adding more consumers.
+
+**How do you handle event schema evolution?**
+
+Prefer backward/forward-compatible changes, explicit versioning where needed, additive fields before removals, and consumer compatibility testing. A producer should not assume every consumer upgrades simultaneously.
+
+**Why is the outbox pattern useful?**
+
+It addresses the dual-write problem: updating a database and publishing an event independently can leave one successful and the other failed. The service writes the business change and outbox record in one local transaction; a publisher then delivers the outbox event asynchronously.
+
+### Distributed-service failure modes
+
+**What happens when service A calls B, B calls C, and C is slow?**
+
+Latency and resource consumption can propagate through the call chain. Each boundary needs an explicit timeout and bounded concurrency, and the overall deadline should be propagated so downstream work cannot outlive the caller's useful request budget.
+
+**Why is a single global timeout a bad design?**
+
+Different operations have different latency budgets and dependency characteristics. A service should derive downstream budgets from the remaining end-to-end deadline rather than giving every hop an unrelated fixed timeout.
+
+**How do you prevent one dependency from taking down the whole service?**
+
+Isolate its resources, enforce timeouts, use bounded retries, circuit breaking where appropriate, shed non-critical work, and provide a degraded path. Observability should make the dependency's contribution to latency and errors visible.
+
+**How do you handle partial failure in a distributed workflow?**
+
+Assume some operations will succeed while others fail. Prefer workflows that can be retried or compensated, persist state transitions, make steps idempotent, and expose an explicit status rather than pretending the operation was atomic across services.
+
+**When would you use asynchronous messaging instead of a synchronous REST call?**
+
+Use messaging when the caller does not need an immediate result, work is long-running, buffering is valuable, temporal decoupling matters, or independent consumers need the event. Synchronous calls are simpler when immediate request/response semantics are genuinely required.
+
+### Senior interview scenarios
+
+**A downstream API starts returning 30-second responses. What do you change first?**
+
+First contain the blast radius: enforce or verify timeouts and concurrency limits, inspect connection-pool and executor saturation, and stop unbounded retries. Then identify whether the dependency is slow, overloaded, or unreachable and choose a recovery/fallback strategy based on business criticality.
+
+**Traffic doubles and your Redis-backed cache starts missing heavily. What do you investigate?**
+
+Check hit rate, key distribution, TTL behavior, eviction, hot keys, serialization cost, network latency, Redis CPU/memory, connection pools, and whether a deployment changed cache keys or access patterns. Scaling Redis is not automatically the first answer.
+
+**A Kafka consumer is processing the same payment event twice. Is Kafka broken?**
+
+Not necessarily. Duplicate delivery is compatible with at-least-once processing. I would inspect the consumer's acknowledgement/commit behavior and, more importantly, verify that the payment side effect is idempotent using a durable operation ID.
+
+**Interviewer follow-ups:**
+
+- Where should retries live: client, service, or both?
+- What metrics indicate a circuit breaker is too aggressive?
+- When is failing open safer than failing closed?
+- How do you test a retry policy without making tests slow or flaky?
+- How do you stop a poison message from repeatedly cycling through a queue?
+- What happens to your resilience strategy during a regional outage?
+- Which failures should be handled synchronously and which asynchronously?
+
+---
 # 14. Testing
 
 339. Unit test vs integration test.
