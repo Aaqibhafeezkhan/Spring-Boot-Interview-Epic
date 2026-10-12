@@ -542,6 +542,116 @@ Not necessarily. Duplicate delivery is compatible with at-least-once processing.
 - Which failures should be handled synchronously and which asynchronously?
 
 ---
+# Phase 6 — Testing and Quality Deep Dive
+
+A reliable Spring Boot test strategy is a portfolio of tests with different costs and guarantees. The key question is not “how do I mock this class?” but “which boundary am I trying to verify, and what real behavior would this test otherwise miss?”
+
+## Test boundaries
+
+### What belongs in a service unit test?
+
+Test business decisions, state transitions, validation rules, and error mapping without starting the Spring context. Use ordinary constructors where practical and mock only collaborators whose behavior is outside the unit's responsibility. Prefer observable outcomes over verifying every internal method call.
+
+### When should you use `@WebMvcTest`?
+
+Use a web slice to test controller mapping, request binding, validation, serialization, exception handlers, and security behavior included in the slice configuration. Collaborators are commonly supplied as mocks. A slice is faster than the full context, but it does not prove that production wiring or every filter is configured correctly.
+
+### When is `@SpringBootTest` justified?
+
+Use it when the behavior depends on application wiring across multiple layers, configuration, filters, or auto-configuration. It is more expensive and can conceal unclear test boundaries if used for every case. Reuse Spring's context cache by keeping test configuration consistent, and avoid creating many near-identical contexts without a reason.
+
+### How should repository tests be written?
+
+Verify queries, mappings, constraints, locking, pagination, and transaction behavior against a database engine representative of production. An embedded H2 database can be useful for fast feedback but may differ from PostgreSQL or MySQL in SQL dialect, indexes, isolation, JSON support, constraints, and locking semantics. Use a containerized real database when those differences matter.
+
+### What should a controller test assert?
+
+Assert HTTP status, headers where relevant, serialized response shape, validation errors, and stable error contracts. Include malformed input, missing resources, conflict cases, and unexpected failures. Avoid binding tests to incidental JSON field ordering or implementation-specific exception text.
+
+## JUnit 5 and Mockito
+
+### How do parameterized tests help?
+
+They express one invariant over a meaningful set of inputs, such as boundary values or invalid formats, without copy-pasting near-identical test methods. Keep each case readable and name the condition being exercised; a giant parameter table can be harder to debug than separate tests.
+
+### What makes a Mockito test brittle?
+
+Over-verification of call order, implementation details, or every interaction makes harmless refactors fail. Verify interactions when they are part of the contract, such as ensuring a payment is not submitted after validation fails. Otherwise, assert the returned result or persisted state.
+
+### How should exceptions be tested?
+
+Assert the exception type and relevant stable properties, then verify the system's required outcome. Avoid matching an entire message unless the message itself is a public contract. For web APIs, also test how the exception becomes an HTTP response.
+
+### How do you keep test data maintainable?
+
+Use small, explicit fixtures that make relevant fields visible. Avoid one global fixture with dozens of defaults, hidden shared state, or random values that make failures hard to reproduce. Use builders when they improve readability, not as another abstraction layer by default.
+
+## Transactions, persistence, and external systems
+
+### Why can a test pass with H2 and fail in production?
+
+The database engines may differ in SQL features, constraint enforcement, collation, isolation, locking, generated values, and query plans. Keep fast tests, but validate database-specific behavior against the production engine and representative schema migrations.
+
+### What is a Testcontainers-style test useful for?
+
+It runs tests against a disposable instance of a real dependency, such as PostgreSQL, Kafka, or Redis. This gives higher fidelity for protocol and engine behavior at the cost of startup time and environmental requirements. Use it for boundaries where an in-memory substitute would be misleading.
+
+### How should outbound HTTP clients be tested?
+
+Test request paths, headers, serialization, timeouts, error mapping, and retry policy against a controlled HTTP server or contract stub. A mocked Java method cannot verify the actual wire request. Keep a smaller number of provider/consumer contract tests where independently deployed services need a stable agreement.
+
+### How should asynchronous code be tested?
+
+Prefer explicit completion signals, bounded waits, and deterministic executors or clocks over arbitrary sleeps. Verify idempotency, retry limits, dead-letter behavior, and eventual outcomes. Avoid tests that depend on thread scheduling or assume an event is processed immediately.
+
+### What is the risk of `@Transactional` in tests?
+
+A test-managed transaction can roll back work at the end, which is convenient but may hide commit-time behavior, cross-transaction visibility, asynchronous work, or code that runs in another thread. Test the real transaction boundary when commit semantics are part of the requirement.
+
+## Determinism and test-suite quality
+
+### How do you test time-dependent logic?
+
+Inject a `Clock` or another controllable time source into business logic rather than relying on the wall clock. This makes expiry, scheduling windows, and date boundaries deterministic and avoids tests that fail around midnight or daylight-saving changes.
+
+### Why do Spring tests become slow?
+
+Common causes include repeatedly creating application contexts, unnecessary full-context tests, starting external dependencies per method, broad component scans, and excessive setup. Measure startup costs, reuse contexts safely, narrow test slices, and keep integration tests focused on cross-layer behavior.
+
+### How do you diagnose flaky tests?
+
+Record the failing seed/input, inspect shared state and resource cleanup, repeat the smallest failing group, and check timing assumptions, ports, database isolation, parallel execution, and eventual consistency. Do not hide flakiness with unbounded waits or blanket reruns.
+
+### What does coverage prove?
+
+Coverage proves that code ran, not that assertions would detect a regression. Review whether tests distinguish correct from incorrect outcomes, include meaningful boundary cases, and exercise failure paths. Use coverage as a signal, not as the definition of quality.
+
+## Production failure scenarios
+
+### A controller test passes, but the endpoint returns 400 in production
+
+Check request binding, content type, JSON shape, validation groups, message converters, filters, and version/configuration differences. Add a regression test at the HTTP boundary using the actual request shape, not only a direct controller method invocation.
+
+### A repository test passes locally but a transaction race appears in production
+
+Reproduce with the production database engine and competing transactions. Inspect isolation level, lock scope, indexes, transaction duration, and retry semantics. A single-threaded H2 test cannot establish concurrency correctness.
+
+### A test suite fails only when parallelized
+
+Look for static mutable state, shared database records, reused ports, global mocks, non-thread-safe fixtures, and order-dependent setup. Isolate resources or disable parallelism only for the genuinely unsafe boundary while fixing the underlying coupling.
+
+### Senior interviewer follow-ups
+
+- Which test layer would catch a Jackson serialization regression?
+- When is a mock preferable to a real dependency, and when is it dangerous?
+- How would you verify a pessimistic lock with two concurrent transactions?
+- Why might a rollback-based test hide a production defect?
+- How do you test retry behavior without waiting through real backoff intervals?
+- What belongs in a consumer contract test versus an end-to-end test?
+- How would you reduce a slow suite without sacrificing confidence?
+
+---
+
 # 14. Testing
 
 339. Unit test vs integration test.
